@@ -7,6 +7,10 @@ import datetime
 import time
 import urllib.parse
 import sqlite3
+import pandas as pd
+import tempfile
+import av # ضروري لمعالجة إطارات الفيديو في WebRTC
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 
 # --- 1. Page Configuration ---
 st.set_page_config(
@@ -64,7 +68,7 @@ init_db()
 def send_telegram_alert(source_option, time_now):
     token = "8524001645:AAFCZbanUp8kJVKxoV0SGkMWYSVGw1kD9Wo" 
     chat_id = "954637036"
-    raw_message = f"Latest Report Sent:\nSource: {source_option}\nTime: {time_now}"
+    raw_message = f"🚨 AQUA-ROAD ALERT:\nSource: {source_option}\nTime: {time_now}\nStatus: Water Accumulation Detected"
     url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={urllib.parse.quote(raw_message)}"
     try:
         requests.get(url, timeout=5)
@@ -73,8 +77,6 @@ def send_telegram_alert(source_option, time_now):
 
 if 'last_alert_time' not in st.session_state:
     st.session_state.last_alert_time = 0
-
-# 
 if 'last_report_html' not in st.session_state:
     st.session_state.last_report_html = ""
 
@@ -93,80 +95,118 @@ st.divider()
 # --- 7. Sidebar ---
 with st.sidebar:
     st.markdown('<h3>⚙️ SETTINGS</h3>', unsafe_allow_html=True)
-    source_option = st.sidebar.selectbox("CHOOSE SOURCE", ("Camera #402", "Camera #105", "Trial Stream"))
-    threshold = st.sidebar.slider("CONFIDENCE", 0.0, 1.0, 0.5)
-    iou_val = st.sidebar.slider("IoU THRESHOLD", 0.0, 1.0, 0.45)
+    input_type = st.radio("SELECT INPUT MODE", ["Live Camera (WebRTC)", "Upload Video", "Upload Image"])
+    source_option = st.selectbox("LOCATION TAG", ("Camera #402", "Camera #105", "Test Unit"))
+    threshold = st.slider("CONFIDENCE", 0.0, 1.0, 0.5)
+    iou_val = st.slider("IoU THRESHOLD", 0.0, 1.0, 0.45)
 
-# --- 8. Main Content ---
-col_video, col_info = st.columns([2, 1])
+# --- 8. Page Tabs (The Dashboard Logic) ---
+tab1, tab2 = st.tabs(["🎥 Real-time Monitoring", "📊 Analytics Dashboard"])
 
-with col_video:
-    st.markdown('<p style="font-weight:bold; color:#5E5E5E;">Live Monitoring Feed</p>', unsafe_allow_html=True)
-    st_frame = st.empty() 
+with tab1:
+    col_video, col_info = st.columns([2, 1])
 
-with col_info:
-    st.markdown('<p style="font-weight:bold; color:#5E5E5E;">Control & Monitoring Panel</p>', unsafe_allow_html=True)
-    status_indicator = st.empty()
-    
-    if source_option == "Camera #402":
-        location_name, coordinates = "Al-Hada District, Riyadh", "24.71°N, 46.67°E"
-    elif source_option == "Camera #105":
-        location_name, coordinates = "Al-Malqa District, Riyadh", "24.82°N, 46.61°E"
-    else:
-        location_name, coordinates = "Test Zone, Riyadh", "00.00°N, 00.00°E"
-
-    st.markdown(f"""
-        <div class="metric-card">
-            <div style="font-size: 10px; color: gray; font-weight: bold; text-transform: uppercase;">Exact Location</div>
-            <div style="font-weight:bold; font-size:14px; color:#1A1C1A;">{location_name}</div>
-            <div style="font-size: 11px; color: #474747;">{coordinates}</div>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    alert_log_placeholder = st.empty()
-
-# --- 9. Processing Execution ---
-cap = cv2.VideoCapture(0) 
-
-while cap.isOpened():
-    ret, frame = cap.read()
-    if not ret: break
-
-    results = model.predict(frame, conf=threshold, iou=iou_val)
-
-    # Check detected classes: Is there an actual hazard?
-    # The blue "Clear" box will be displayed, but it won't trigger an alarm.    
-    current_labels = [model.names[int(box.cls[0])].lower() for box in results[0].boxes]
-    is_danger = any(label in current_labels for label in ["pond", "water", "flood", "puddle"])
-
-    # Display live stream (including bounding boxes)
-    st_frame.image(cv2.cvtColor(results[0].plot(), cv2.COLOR_BGR2RGB), use_container_width=True)
-
-    if is_danger:
-        status_indicator.error("🚨 ALERT: Water Accumulation Detected")
-        current_time = time.time()
+    with col_video:
+        st.markdown('<p style="font-weight:bold; color:#5E5E5E;">Visual Intelligence Feed</p>', unsafe_allow_html=True)
         
-        if current_time - st.session_state.last_alert_time > 600:
-            time_now = datetime.datetime.now().strftime('%H:%M:%S')
-            send_telegram_alert(source_option, time_now)
-            save_report_to_db(source_option, "Detected")
-            st.session_state.last_alert_time = current_time
-            
-            # Store report in session state to remain persistent
-            st.session_state.last_report_html = f"""
-                <div class="metric-card" style="border-left-color: #ba1a1a;">
-                    <b style="color:#ba1a1a;">📅 Latest Archived Report:</b><br>
-                    <span class="details-text">Source: {source_option}</span><br>
-                    <span class="details-text">Time: {time_now}</span><br>
-                    <span style="color:green; font-weight:bold; font-size:13px;">✓ Reported & Saved Successfully</span>
-                </div>
-            """
-            st.toast(f'Alert Saved: {source_option}')
-    else:
-        status_indicator.success("✔️ SYSTEM STATUS: Road is Clear")
+        # --- CASE A: Live Camera (WebRTC) ---
+        if input_type == "Live Camera (WebRTC)":
+            class VideoProcessor(VideoProcessorBase):
+                def recv(self, frame):
+                    img = frame.to_ndarray(format="bgr24")
+                    results = model.predict(img, conf=threshold, iou=iou_val)
+                    annotated_frame = results[0].plot()
+                    
+                    # Logic to trigger alert based on labels
+                    current_labels = [model.names[int(box.cls[0])].lower() for box in results[0].boxes]
+                    if any(label in current_labels for label in ["pond", "water", "flood", "puddle"]):
+                        # Note: Complex UI updates inside WebRTC are limited, we rely on annotated frame
+                        pass
+                    
+                    return av.VideoFrame.from_ndarray(annotated_frame, format="bgr24")
 
-    # Always display the saved report under the location section
-    if st.session_state.last_report_html:
-        alert_log_placeholder.markdown(st.session_state.last_report_html, unsafe_allow_html=True)
+            webrtc_streamer(
+                key="aqua-road-live",
+                mode=WebRtcMode.SENDRECV,
+                video_processor_factory=VideoProcessor,
+                rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+                media_stream_constraints={"video": True, "audio": False},
+            )
 
-cap.release()
+        # --- CASE B: Upload Video ---
+        elif input_type == "Upload Video":
+            uploaded_video = st.file_uploader("Upload MP4/AVI", type=['mp4', 'avi', 'mov'])
+            if uploaded_video:
+                tfile = tempfile.NamedTemporaryFile(delete=False)
+                tfile.write(uploaded_video.read())
+                cap = cv2.VideoCapture(tfile.name)
+                st_frame = st.empty()
+                
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret: break
+                    results = model.predict(frame, conf=threshold, iou=iou_val)
+                    st_frame.image(cv2.cvtColor(results[0].plot(), cv2.COLOR_BGR2RGB), use_container_width=True)
+                    
+                    # Alert Logic
+                    current_labels = [model.names[int(box.cls[0])].lower() for box in results[0].boxes]
+                    if any(label in current_labels for label in ["pond", "water", "flood", "puddle"]):
+                        curr_time = time.time()
+                        if curr_time - st.session_state.last_alert_time > 600:
+                            time_now = datetime.datetime.now().strftime('%H:%M:%S')
+                            send_telegram_alert(source_option, time_now)
+                            save_report_to_db(source_option, "Hazard Detected")
+                            st.session_state.last_alert_time = curr_time
+                            st.toast("🚨 Incident Reported!")
+                cap.release()
+
+        # --- CASE C: Upload Image ---
+        elif input_type == "Upload Image":
+            uploaded_img = st.file_uploader("Upload Road Image", type=['jpg', 'jpeg', 'png'])
+            if uploaded_img:
+                file_bytes = np.asarray(bytearray(uploaded_img.read()), dtype=np.uint8)
+                image = cv2.imdecode(file_bytes, 1)
+                results = model.predict(image, conf=threshold)
+                st.image(cv2.cvtColor(results[0].plot(), cv2.COLOR_BGR2RGB), caption="Analysis Result")
+
+    with col_info:
+        st.markdown('<p style="font-weight:bold; color:#5E5E5E;">Location Details</p>', unsafe_allow_html=True)
+        if source_option == "Camera #402":
+            loc, coords = "Al-Hada District, Riyadh", "24.71°N, 46.67°E"
+        elif source_option == "Camera #105":
+            loc, coords = "Al-Malqa District, Riyadh", "24.82°N, 46.61°E"
+        else:
+            loc, coords = "Mobile Unit", "Live GPS Coordinates"
+
+        st.markdown(f"""
+            <div class="metric-card">
+                <div style="font-size: 10px; color: gray; font-weight: bold; text-transform: uppercase;">Exact Location</div>
+                <div style="font-weight:bold; font-size:14px; color:#1A1C1A;">{loc}</div>
+                <div style="font-size: 11px; color: #474747;">{coords}</div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # Display the persistent alert log
+        if st.session_state.last_report_html:
+            st.markdown(st.session_state.last_report_html, unsafe_allow_html=True)
+
+with tab2:
+    st.markdown('<h3 style="color:#003527;">📊 Historical Incident Reports</h3>', unsafe_allow_html=True)
+    
+    # Connect to DB and show results
+    try:
+        conn = sqlite3.connect('aqua_road.db')
+        df = pd.read_sql_query("SELECT * FROM reports ORDER BY id DESC", conn)
+        conn.close()
+        
+        if not df.empty:
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.dataframe(df, use_container_width=True)
+            with col2:
+                st.metric("Total Incidents", len(df))
+                st.info("The dashboard above updates in real-time as hazards are detected by the YOLOv8 model.")
+        else:
+            st.write("No incidents archived yet. Monitoring is active.")
+    except:
+        st.warning("Database is initializing...")
