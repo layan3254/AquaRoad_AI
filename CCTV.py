@@ -29,6 +29,8 @@ st.markdown("""
     /* Dashboard Table Styling */
     .stTable td { color: #333333 !important; font-weight: 500; }
     .stTable th { background-color: #E8E8E8 !important; color: #003527 !important; }
+    /* تغميق نصوص السايد بار */
+    .sidebar-bold { font-weight: bold; font-size: 16px; color: white !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -57,7 +59,7 @@ init_db()
 def send_telegram_alert(source_option, time_now):
     token = "8524001645:AAFCZbanUp8kJVKxoV0SGkMWYSVGw1kD9Wo" 
     chat_id = "954637036"
-    raw_message = f"🚨 AQUA-ROAD ALERT:\nSource: {source_option}\nTime: {time_now}\nStatus: Water Accumulation Detected"
+    raw_message = f"🚨 AQUA-ROAD ALERT:\nSource: {source_option}\nTime: {time_now}\nStatus: Hazard Detected"
     url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={urllib.parse.quote(raw_message)}"
     try:
         requests.get(url, timeout=5)
@@ -69,22 +71,27 @@ def load_model():
 
 model = load_model()
 
-# Session States
+# Session States لضمان بقاء التقارير والرسائل
 if 'last_alert_time' not in st.session_state: st.session_state.last_alert_time = 0
 if 'last_report_html' not in st.session_state: st.session_state.last_report_html = ""
 
 # --- 5. Main UI Layout ---
 st.markdown('<h1 class="main-title">🌊 AQUA-ROAD AI</h1>', unsafe_allow_html=True)
 
-# Tabs
+# الـ Tabs لدمج الداشبورد
 tab1, tab2 = st.tabs(["🎥 LIVE MONITORING", "📊 ANALYTICS DASHBOARD"])
 
-# --- SIDEBAR SETTINGS ---
+# --- 7. Sidebar ---
 with st.sidebar:
     st.markdown('<h3>⚙️ SETTINGS</h3>', unsafe_allow_html=True)
-    mode = st.radio("Input Mode", ["Live Camera", "Upload Video"])
-    source_option = st.selectbox("Location Tag", ("Camera #402", "Camera #105", "Test Unit"))
-    threshold = st.slider("Confidence", 0.0, 1.0, 0.5)
+    # جعل اسم الكاميرا غامق باستخدام Markdown
+    st.markdown('<p class="sidebar-bold">DEVICE SELECTION</p>', unsafe_allow_html=True)
+    source_option = st.selectbox("", ("Camera #402", "Camera #105", "Test Unit"), label_visibility="collapsed")
+    
+    st.markdown('<p class="sidebar-bold">INPUT MODE</p>', unsafe_allow_html=True)
+    mode = st.radio("", ["Live Web-Camera", "Upload Video File"], label_visibility="collapsed")
+    
+    threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.5)
     iou_val = st.slider("IoU Threshold", 0.0, 1.0, 0.45)
 
 # --- TAB 1: LIVE MONITORING ---
@@ -92,67 +99,87 @@ with tab1:
     col_vid, col_data = st.columns([2, 1])
     
     with col_vid:
-        if mode == "Live Camera":
-            st.info("💡 Note: If camera doesn't start, ensure no other app is using it and grant browser permission.")
+        if mode == "Live Web-Camera":
+            st.info("💡 If camera doesn't start, please check browser permissions or use HTTPS.")
             
-            class VideoProcessor(VideoProcessorBase):
-                def recv(self, frame):
-                    img = frame.to_ndarray(format="bgr24")
-                    results = model.predict(img, conf=threshold, iou=iou_val)
-                    annotated_frame = results[0].plot()
-                    return av.VideoFrame.from_ndarray(annotated_frame, format="bgr24")
-
+            # محرك الكاميرا الحية
             webrtc_streamer(
-                key="aqua-cam",
+                key="aqua-cam-v3",
                 mode=WebRtcMode.SENDRECV,
-                video_processor_factory=VideoProcessor,
                 rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+                video_frame_callback=lambda frame: av.VideoFrame.from_ndarray(
+                    model.predict(frame.to_ndarray(format="bgr24"), conf=threshold, iou=iou_val)[0].plot(), 
+                    format="bgr24"
+                ),
                 media_stream_constraints={"video": True, "audio": False},
+                async_processing=True,
             )
         
         else:
-            uploaded_file = st.file_uploader("Upload Video", type=['mp4', 'mov'])
+            uploaded_file = st.file_uploader("Upload Video for Analysis", type=['mp4', 'mov', 'avi'])
             if uploaded_file:
                 tfile = tempfile.NamedTemporaryFile(delete=False)
                 tfile.write(uploaded_file.read())
                 cap = cv2.VideoCapture(tfile.name)
                 st_frame = st.empty()
+                
                 while cap.isOpened():
                     ret, frame = cap.read()
                     if not ret: break
+                    
                     results = model.predict(frame, conf=threshold)
                     st_frame.image(cv2.cvtColor(results[0].plot(), cv2.COLOR_BGR2RGB))
-                    # Logic for Telegram/DB
+                    
+                    # التحقق من وجود فيضان (Pond/Flood)
                     current_labels = [model.names[int(box.cls[0])].lower() for box in results[0].boxes]
-                    if any(label in current_labels for label in ["pond", "water", "flood"]):
+                    is_danger = any(label in current_labels for label in ["pond", "water", "flood", "puddle"])
+                    
+                    if is_danger:
                         now = time.time()
-                        if now - st.session_state.last_alert_time > 600:
-                            send_telegram_alert(source_option, datetime.datetime.now().strftime('%H:%M'))
+                        if now - st.session_state.last_alert_time > 600: # تنبيه كل 10 دقائق
+                            time_str = datetime.datetime.now().strftime('%H:%M:%S')
+                            send_telegram_alert(source_option, time_str)
                             save_report_to_db(source_option, "Detected")
                             st.session_state.last_alert_time = now
+                            
+                            # بناء رسالة التحقق وحفظها في الـ session_state لتبقى ثابتة
+                            st.session_state.last_report_html = f"""
+                                <div class="metric-card" style="border-left-color: #ba1a1a;">
+                                    <b style="color:#ba1a1a;">📅 Latest Hazard Verified:</b><br>
+                                    <span style="font-size:13px; color:#333;">Source: {source_option}</span><br>
+                                    <span style="font-size:13px; color:#333;">Time: {time_str}</span><br>
+                                    <span style="color:green; font-weight:bold; font-size:12px;">✓ Telegram Sent & Logged</span>
+                                </div>
+                            """
+                cap.release()
 
     with col_data:
         st.markdown(f"""
             <div class="metric-card">
-                <div style="font-size: 10px; color: gray; font-weight: bold; text-transform: uppercase;">Location</div>
-                <div style="font-weight:bold; font-size:16px;">{source_option}</div>
+                <div style="font-size: 10px; color: gray; font-weight: bold; text-transform: uppercase;">Current Unit</div>
+                <div style="font-weight:bold; font-size:16px; color:#003527;">{source_option}</div>
             </div>
         """, unsafe_allow_html=True)
+        
+        # عرض رسالة التحقق دائماً إذا كانت موجودة
         if st.session_state.last_report_html:
             st.markdown(st.session_state.last_report_html, unsafe_allow_html=True)
+        else:
+            st.write("No active hazards reported.")
 
-# --- TAB 2: DASHBOARD & ANALYTICS ---
+# --- TAB 2: DASHBOARD & ANALYTICS (دمج كودك هنا) ---
 with tab2:
-    st.markdown("### 📋 Archived Incident Reports")
+    st.markdown('<h1 style="text-align:left; font-size:24px;">📊 ANALYTICS DASHBOARD</h1>', unsafe_allow_html=True)
+    
     conn = sqlite3.connect('aqua_road.db')
     df = pd.read_sql_query("SELECT date as Date, time as Time, source as Source, status as Status FROM reports ORDER BY id DESC", conn)
     conn.close()
 
     if not df.empty:
         st.table(df)
-        st.markdown("### 📈 Analytics: Most Active Cameras")
+        st.markdown("### 📈 Incident Distribution")
         stats_df = df['Source'].value_counts().reset_index()
         stats_df.columns = ['Source', 'Number of Reports']
         st.bar_chart(stats_df, x="Source", y="Number of Reports", color="#003527")
     else:
-        st.warning("⚠️ No records found yet. Detected hazards will appear here.")
+        st.warning("⚠️ No records found in the database yet.")
