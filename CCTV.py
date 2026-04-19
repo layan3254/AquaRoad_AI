@@ -117,20 +117,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown('<p style="color:white; font-size:13px; font-weight:bold;">📊 NAVIGATION</p>', unsafe_allow_html=True)
 
-    st.markdown("""
-        <a href="/Dashboard" target="_self" style="
-            display: block;
-            background-color: #ffffff;
-            color: #003527 !important;
-            text-align: center;
-            padding: 10px 16px;
-            border-radius: 8px;
-            font-weight: bold;
-            font-size: 14px;
-            text-decoration: none;
-            margin-top: 4px;
-        ">📊 Go to Dashboard</a>
-    """, unsafe_allow_html=True)
+    if st.button("📊 Go to Dashboard", use_container_width=True):
+        st.switch_page("pages/Dashboard.py")
 
 # --- 8. Main Content Layout ---
 col_video, col_info = st.columns([2, 1])
