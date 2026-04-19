@@ -38,13 +38,6 @@ st.markdown("""
         margin-bottom: 15px;
     }
     .details-text { color: #474747 !important; font-size: 13px; }
-
-    /* Style the camera widget */
-    [data-testid="stCameraInput"] {
-        border-radius: 16px;
-        overflow: hidden;
-        box-shadow: 0 4px 16px rgba(0,53,39,0.15);
-    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -105,19 +98,8 @@ with st.sidebar:
     threshold = st.slider("CONFIDENCE", 0.0, 1.0, 0.5)
     iou_val = st.slider("IoU THRESHOLD", 0.0, 1.0, 0.45)
 
-# --- 8. Main Content ---
+# --- 8. Main Content Layout ---
 col_video, col_info = st.columns([2, 1])
-
-with col_video:
-    st.markdown('<p style="font-weight:bold; color:#5E5E5E;">Live Monitoring Feed</p>', unsafe_allow_html=True)
-
-    # ✅ Same approach as Smart Explorer — uses the browser camera directly.
-    # No cv2.VideoCapture, no device index, works on any laptop/phone.
-    camera_image = st.camera_input(
-        label="Point the camera at the road",
-        label_visibility="collapsed",
-        key="cam_input"
-    )
 
 with col_info:
     st.markdown('<p style="font-weight:bold; color:#5E5E5E;">Control & Monitoring Panel</p>', unsafe_allow_html=True)
@@ -140,27 +122,38 @@ with col_info:
 
     alert_log_placeholder = st.empty()
 
-# --- 9. Process the captured frame ---
-if camera_image is not None:
-    # Convert browser snapshot → numpy array for YOLO
-    img_bytes = camera_image.getvalue()
-    pil_img   = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    frame     = np.array(pil_img)                         # RGB numpy array
-    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)    # YOLO expects BGR
+# --- 9. Camera Input (browser-based, no cv2.VideoCapture needed) ---
+with col_video:
+    st.markdown('<p style="font-weight:bold; color:#5E5E5E;">Live Monitoring Feed</p>', unsafe_allow_html=True)
 
-    # Run YOLO inference
+    # st.camera_input opens the laptop camera through the browser.
+    # Every time the shutter is clicked, Streamlit reruns and processes the new frame.
+    camera_image = st.camera_input(
+        label="Capture frame for detection",
+        label_visibility="collapsed"
+    )
+
+    result_frame = st.empty()  # annotated image will appear here after detection
+
+# --- 10. Run YOLO on each captured frame ---
+if camera_image is not None:
+    # Convert browser snapshot → numpy BGR array for YOLO
+    pil_img   = Image.open(io.BytesIO(camera_image.getvalue())).convert("RGB")
+    frame_rgb = np.array(pil_img)
+    frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+
+    # YOLO inference
     results = model.predict(frame_bgr, conf=threshold, iou=iou_val)
 
-    # Check for water-related classes
+    # Check for water-related labels
     current_labels = [model.names[int(box.cls[0])].lower() for box in results[0].boxes]
     is_danger = any(label in current_labels for label in ["pond", "water", "flood", "puddle"])
 
-    # Show annotated result (convert back to RGB for Streamlit)
+    # Show annotated result below the camera widget
     annotated_rgb = cv2.cvtColor(results[0].plot(), cv2.COLOR_BGR2RGB)
-    with col_video:
-        st.image(annotated_rgb, use_container_width=True)
+    result_frame.image(annotated_rgb, caption="Detection Result", use_container_width=True)
 
-    # Update status & trigger alerts
+    # Status + alert logic
     if is_danger:
         status_indicator.error("🚨 ALERT: Water Accumulation Detected")
         current_time = time.time()
@@ -187,5 +180,4 @@ if camera_image is not None:
         alert_log_placeholder.markdown(st.session_state.last_report_html, unsafe_allow_html=True)
 
 else:
-    # No photo taken yet
-    status_indicator.info("📷 Take a photo to start detection")
+    status_indicator.info("📷 Click the camera button to capture a frame and start detection.")
