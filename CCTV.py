@@ -124,7 +124,7 @@ with st.sidebar:
 # Change index 0 / 1 to match your physical camera ports.
 SOURCE_MAP = {
     "Camera #402": 0,        # change to RTSP URL if it's a network camera
-    "Camera #105": 1,        # change to RTSP URL if it's a network camera
+    "Camera #105": 0,        # change to RTSP URL if it's a network camera
     "Trial Stream": trial_url if source_option == "Trial Stream" else "",
 }
 
