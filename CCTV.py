@@ -8,6 +8,7 @@ import time
 import urllib.parse
 import sqlite3
 import io
+import os
 from PIL import Image
 
 # --- 1. Page Configuration ---
@@ -15,6 +16,9 @@ st.set_page_config(
     page_title="AQUA-ROAD | Autonomous Monitoring",
     layout="wide"
 )
+
+# --- SHARED DB PATH (always the project root, regardless of CWD) ---
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(_file_)), 'aqua_road.db')
 
 # --- 2. Interface Customization (CSS) ---
 st.markdown("""
@@ -43,7 +47,7 @@ st.markdown("""
 
 # --- 3. Database Management ---
 def init_db():
-    conn = sqlite3.connect('aqua_road.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS reports 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -52,7 +56,7 @@ def init_db():
     conn.close()
 
 def save_report_to_db(source, status):
-    conn = sqlite3.connect('aqua_road.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     now = datetime.datetime.now()
     c.execute("INSERT INTO reports (date, time, source, status) VALUES (?, ?, ?, ?)",
@@ -98,6 +102,10 @@ with st.sidebar:
     threshold = st.slider("CONFIDENCE", 0.0, 1.0, 0.5)
     iou_val = st.slider("IoU THRESHOLD", 0.0, 1.0, 0.45)
 
+    st.markdown("---")
+    st.markdown('<p style="color:white; font-size:13px; font-weight:bold;">📊 NAVIGATION</p>', unsafe_allow_html=True)
+    st.page_link("pages/Dashboard.py", label="Go to Dashboard", icon="📊")
+
 # --- 8. Main Content Layout ---
 col_video, col_info = st.columns([2, 1])
 
@@ -122,38 +130,29 @@ with col_info:
 
     alert_log_placeholder = st.empty()
 
-# --- 9. Camera Input (browser-based, no cv2.VideoCapture needed) ---
+# --- 9. Camera Input ---
 with col_video:
     st.markdown('<p style="font-weight:bold; color:#5E5E5E;">Live Monitoring Feed</p>', unsafe_allow_html=True)
-
-    # st.camera_input opens the laptop camera through the browser.
-    # Every time the shutter is clicked, Streamlit reruns and processes the new frame.
     camera_image = st.camera_input(
         label="Capture frame for detection",
         label_visibility="collapsed"
     )
-
-    result_frame = st.empty()  # annotated image will appear here after detection
+    result_frame = st.empty()
 
 # --- 10. Run YOLO on each captured frame ---
 if camera_image is not None:
-    # Convert browser snapshot → numpy BGR array for YOLO
     pil_img   = Image.open(io.BytesIO(camera_image.getvalue())).convert("RGB")
     frame_rgb = np.array(pil_img)
     frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
-    # YOLO inference
     results = model.predict(frame_bgr, conf=threshold, iou=iou_val)
 
-    # Check for water-related labels
     current_labels = [model.names[int(box.cls[0])].lower() for box in results[0].boxes]
     is_danger = any(label in current_labels for label in ["pond", "water", "flood", "puddle"])
 
-    # Show annotated result below the camera widget
     annotated_rgb = cv2.cvtColor(results[0].plot(), cv2.COLOR_BGR2RGB)
     result_frame.image(annotated_rgb, caption="Detection Result", use_container_width=True)
 
-    # Status + alert logic
     if is_danger:
         status_indicator.error("🚨 ALERT: Water Accumulation Detected")
         current_time = time.time()
