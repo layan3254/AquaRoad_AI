@@ -38,6 +38,22 @@ st.markdown("""
         margin-bottom: 15px;
     }
     .details-text { color: #474747 !important; font-size: 13px; }
+
+    /* Dashboard button styling */
+    [data-testid="stSidebar"] a[data-testid="stPageLink-NavLink"] {
+        background-color: #ffffff !important;
+        color: #003527 !important;
+        border-radius: 8px !important;
+        padding: 10px 16px !important;
+        font-weight: bold !important;
+        display: block !important;
+        text-align: center !important;
+        text-decoration: none !important;
+        margin-top: 8px;
+    }
+    [data-testid="stSidebar"] a[data-testid="stPageLink-NavLink"]:hover {
+        background-color: #e0ede9 !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -98,6 +114,24 @@ with st.sidebar:
     threshold = st.slider("CONFIDENCE", 0.0, 1.0, 0.5)
     iou_val = st.slider("IoU THRESHOLD", 0.0, 1.0, 0.45)
 
+    st.markdown("---")
+    st.markdown('<p style="color:white; font-size:13px; font-weight:bold;">📊 NAVIGATION</p>', unsafe_allow_html=True)
+
+    st.markdown("""
+        <a href="/Dashboard" target="_self" style="
+            display: block;
+            background-color: #ffffff;
+            color: #003527 !important;
+            text-align: center;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-weight: bold;
+            font-size: 14px;
+            text-decoration: none;
+            margin-top: 4px;
+        ">📊 Go to Dashboard</a>
+    """, unsafe_allow_html=True)
+
 # --- 8. Main Content Layout ---
 col_video, col_info = st.columns([2, 1])
 
@@ -122,38 +156,31 @@ with col_info:
 
     alert_log_placeholder = st.empty()
 
-# --- 9. Camera Input (browser-based, no cv2.VideoCapture needed) ---
+# --- 9. Camera Input ---
 with col_video:
     st.markdown('<p style="font-weight:bold; color:#5E5E5E;">Live Monitoring Feed</p>', unsafe_allow_html=True)
 
-    # st.camera_input opens the laptop camera through the browser.
-    # Every time the shutter is clicked, Streamlit reruns and processes the new frame.
     camera_image = st.camera_input(
         label="Capture frame for detection",
         label_visibility="collapsed"
     )
 
-    result_frame = st.empty()  # annotated image will appear here after detection
+    result_frame = st.empty()
 
 # --- 10. Run YOLO on each captured frame ---
 if camera_image is not None:
-    # Convert browser snapshot → numpy BGR array for YOLO
     pil_img   = Image.open(io.BytesIO(camera_image.getvalue())).convert("RGB")
     frame_rgb = np.array(pil_img)
     frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 
-    # YOLO inference
     results = model.predict(frame_bgr, conf=threshold, iou=iou_val)
 
-    # Check for water-related labels
     current_labels = [model.names[int(box.cls[0])].lower() for box in results[0].boxes]
     is_danger = any(label in current_labels for label in ["pond", "water", "flood", "puddle"])
 
-    # Show annotated result below the camera widget
     annotated_rgb = cv2.cvtColor(results[0].plot(), cv2.COLOR_BGR2RGB)
     result_frame.image(annotated_rgb, caption="Detection Result", use_container_width=True)
 
-    # Status + alert logic
     if is_danger:
         status_indicator.error("🚨 ALERT: Water Accumulation Detected")
         current_time = time.time()
